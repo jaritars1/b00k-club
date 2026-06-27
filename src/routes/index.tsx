@@ -66,17 +66,17 @@ function genreClass(genre: Genre): string {
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Book Club Recommendation Hub" },
+      { title: "ALW Bookclub\u00a0" },
       {
         name: "description",
         content:
-          "Discover, share, and organize your book club recommendations in one cozy place.",
+          "Share your book suggestions for our next read!",
       },
-      { property: "og:title", content: "Book Club Recommendation Hub" },
+      { property: "og:title", content: "ALW Bookclub\u00a0" },
       {
         property: "og:description",
         content:
-          "Discover, share, and organize your book club recommendations in one cozy place.",
+          "Share your book suggestions for our next read!",
       },
     ],
   }),
@@ -153,10 +153,10 @@ function BookClubHub() {
             <BookOpen className="h-8 w-8 text-primary" />
           </div>
           <h1 className="font-serif text-4xl font-bold tracking-tight text-foreground sm:text-5xl">
-            Book Club Recommendation Hub
+            ALW Bookclub&nbsp;
           </h1>
           <p className="mx-auto max-w-2xl text-lg text-muted-foreground">
-            Share your favorite reads and find the next book your club will love.
+            Share your book suggestions for our next read!
           </p>
         </header>
 
@@ -171,7 +171,7 @@ function BookClubHub() {
                 Add a Recommendation
               </CardTitle>
               <CardDescription>
-                Tell us about a book the club should read next.
+                What should we read next?
               </CardDescription>
             </CardHeader>
             <CardContent>
