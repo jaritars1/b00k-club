@@ -66,17 +66,17 @@ function genreClass(genre: Genre): string {
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Book Club Recommendation Hub" },
+      { title: "ALW Bookclub\u00a0" },
       {
         name: "description",
         content:
-          "Discover, share, and organize your book club recommendations in one cozy place.",
+          "Share your book suggestions for our next read!",
       },
-      { property: "og:title", content: "Book Club Recommendation Hub" },
+      { property: "og:title", content: "ALW Bookclub\u00a0" },
       {
         property: "og:description",
         content:
-          "Discover, share, and organize your book club recommendations in one cozy place.",
+          "Share your book suggestions for our next read!",
       },
     ],
   }),
