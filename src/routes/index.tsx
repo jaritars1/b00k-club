@@ -1,6 +1,8 @@
-import { useState, useEffect } from "react";
-import { createFileRoute } from "@tanstack/react-router";
-import { BookOpen, Plus, Search, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { useMutation, useSuspenseQuery, queryOptions } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { BookOpen, Plus, Search, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +23,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
+import { addBook, listBooks } from "@/lib/books.functions";
 
 const GENRES = [
   "Fiction",
@@ -34,17 +38,7 @@ const GENRES = [
 
 type Genre = (typeof GENRES)[number];
 
-interface BookRec {
-  id: string;
-  title: string;
-  author: string;
-  genre: Genre;
-  createdAt: number;
-}
-
-const STORAGE_KEY = "book-club-recommendations";
-
-function genreClass(genre: Genre): string {
+function genreClass(genre: string): string {
   switch (genre) {
     case "Fiction":
       return "genre-fiction";
@@ -58,10 +52,15 @@ function genreClass(genre: Genre): string {
       return "genre-romance";
     case "Biography/History":
       return "genre-bio";
-    case "Other":
+    default:
       return "genre-other";
   }
 }
+
+const booksQueryOptions = queryOptions({
+  queryKey: ["books"],
+  queryFn: () => listBooks(),
+});
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -69,69 +68,63 @@ export const Route = createFileRoute("/")({
       { title: "ALW Bookclub\u00a0" },
       {
         name: "description",
-        content:
-          "Share your book suggestions for our next read!",
+        content: "Share your book suggestions for our next read!",
       },
       { property: "og:title", content: "ALW Bookclub\u00a0" },
       {
         property: "og:description",
-        content:
-          "Share your book suggestions for our next read!",
+        content: "Share your book suggestions for our next read!",
       },
     ],
   }),
+  loader: ({ context }) =>
+    context.queryClient.ensureQueryData(booksQueryOptions),
   component: BookClubHub,
+  errorComponent: ({ error }) => (
+    <div role="alert" className="p-8 text-center text-destructive">
+      Failed to load books: {error.message}
+    </div>
+  ),
+  notFoundComponent: () => <div>Not found.</div>,
 });
 
 function BookClubHub() {
-  const [books, setBooks] = useState<BookRec[]>([]);
+  const { data: books } = useSuspenseQuery(booksQueryOptions);
+  const router = useRouter();
+  const addBookFn = useServerFn(addBook);
+
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
   const [genre, setGenre] = useState<Genre | "">("");
   const [filterGenre, setFilterGenre] = useState<Genre | "all">("all");
   const [search, setSearch] = useState("");
 
-  // Load from localStorage on mount (client-side only).
-  useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as BookRec[];
-      if (Array.isArray(parsed)) {
-        setBooks(parsed);
-      }
-    } catch {
-      setBooks([]);
-    }
-  }, []);
+  const mutation = useMutation({
+    mutationFn: (vars: { title: string; author: string; genre: Genre }) =>
+      addBookFn({ data: vars }),
+    onSuccess: async () => {
+      setTitle("");
+      setAuthor("");
+      setGenre("");
+      toast.success("Recommendation added!");
+      await router.invalidate();
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || "Failed to add book");
+    },
+  });
 
-  // Persist to localStorage whenever books change.
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(books));
-  }, [books]);
-
-  const canSubmit = title.trim() && author.trim() && genre;
+  const canSubmit =
+    title.trim() && author.trim() && genre && !mutation.isPending;
 
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
-
-    const newBook: BookRec = {
-      id: crypto.randomUUID(),
+    mutation.mutate({
       title: title.trim(),
       author: author.trim(),
       genre: genre as Genre,
-      createdAt: Date.now(),
-    };
-
-    setBooks((prev) => [newBook, ...prev]);
-    setTitle("");
-    setAuthor("");
-    setGenre("");
-  };
-
-  const handleDelete = (id: string) => {
-    setBooks((prev) => prev.filter((book) => book.id !== id));
+    });
   };
 
   const filteredBooks = books.filter((book) => {
@@ -147,7 +140,6 @@ function BookClubHub() {
   return (
     <main className="min-h-screen bg-background px-4 py-10 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-5xl space-y-10">
-        {/* Header */}
         <header className="text-center space-y-3">
           <div className="inline-flex items-center justify-center rounded-full bg-secondary p-3">
             <BookOpen className="h-8 w-8 text-primary" />
@@ -160,19 +152,13 @@ function BookClubHub() {
           </p>
         </header>
 
-        {/* Add Recommendation Form */}
         <section aria-labelledby="add-heading">
           <Card className="border border-border shadow-sm">
             <CardHeader>
-              <CardTitle
-                id="add-heading"
-                className="font-serif text-2xl"
-              >
+              <CardTitle id="add-heading" className="font-serif text-2xl">
                 Add a Recommendation
               </CardTitle>
-              <CardDescription>
-                What should we read next?
-              </CardDescription>
+              <CardDescription>What should we read next?</CardDescription>
             </CardHeader>
             <CardContent>
               <form
@@ -186,6 +172,7 @@ function BookClubHub() {
                     placeholder="e.g. The Night Circus"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
+                    disabled={mutation.isPending}
                   />
                 </div>
                 <div className="space-y-2">
@@ -195,6 +182,7 @@ function BookClubHub() {
                     placeholder="e.g. Erin Morgenstern"
                     value={author}
                     onChange={(e) => setAuthor(e.target.value)}
+                    disabled={mutation.isPending}
                   />
                 </div>
                 <div className="space-y-2">
@@ -202,6 +190,7 @@ function BookClubHub() {
                   <Select
                     value={genre}
                     onValueChange={(value) => setGenre(value as Genre)}
+                    disabled={mutation.isPending}
                   >
                     <SelectTrigger id="genre" className="w-full">
                       <SelectValue placeholder="Select genre" />
@@ -216,12 +205,12 @@ function BookClubHub() {
                   </Select>
                 </div>
                 <div className="flex items-end">
-                  <Button
-                    type="submit"
-                    disabled={!canSubmit}
-                    className="w-full"
-                  >
-                    <Plus className="h-4 w-4" />
+                  <Button type="submit" disabled={!canSubmit} className="w-full">
+                    {mutation.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Plus className="h-4 w-4" />
+                    )}
                     Add Book
                   </Button>
                 </div>
@@ -230,7 +219,6 @@ function BookClubHub() {
           </Card>
         </section>
 
-        {/* Recommended Books */}
         <section aria-labelledby="recommendations-heading" className="space-y-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <h2
@@ -298,25 +286,14 @@ function BookClubHub() {
                       by {book.author}
                     </p>
                   </div>
-                  <div className="flex shrink-0 items-center gap-3">
-                    <Badge
-                      className={cn(
-                        genreClass(book.genre),
-                        "border-transparent font-sans",
-                      )}
-                    >
-                      {book.genre}
-                    </Badge>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="shrink-0 text-muted-foreground hover:text-destructive"
-                      onClick={() => handleDelete(book.id)}
-                      aria-label={`Delete ${book.title}`}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
+                  <Badge
+                    className={cn(
+                      genreClass(book.genre),
+                      "border-transparent font-sans shrink-0",
+                    )}
+                  >
+                    {book.genre}
+                  </Badge>
                 </div>
               ))}
             </div>
