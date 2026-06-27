@@ -153,10 +153,10 @@ function BookClubHub() {
             <BookOpen className="h-8 w-8 text-primary" />
           </div>
           <h1 className="font-serif text-4xl font-bold tracking-tight text-foreground sm:text-5xl">
-            Book Club Recommendation Hub
+            ALW Bookclub&nbsp;
           </h1>
           <p className="mx-auto max-w-2xl text-lg text-muted-foreground">
-            Share your favorite reads and find the next book your club will love.
+            Share your book suggestions for our next read!
           </p>
         </header>
 
