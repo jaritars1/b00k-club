@@ -284,32 +284,21 @@ function BookClubHub() {
               </p>
             </div>
           ) : (
-            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="flex flex-col gap-3">
               {filteredBooks.map((book) => (
-                <Card
+                <div
                   key={book.id}
-                  className="flex flex-col justify-between border border-border bg-card shadow-sm transition-shadow hover:shadow-md"
+                  className="flex items-center justify-between gap-4 rounded-xl border border-border bg-card p-4 shadow-sm transition-shadow hover:shadow-md"
                 >
-                  <CardHeader className="pb-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <CardTitle className="line-clamp-2 text-lg leading-snug">
-                        {book.title}
-                      </CardTitle>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="shrink-0 text-muted-foreground hover:text-destructive"
-                        onClick={() => handleDelete(book.id)}
-                        aria-label={`Delete ${book.title}`}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                    <CardDescription className="text-sm">
+                  <div className="min-w-0 space-y-1">
+                    <p className="truncate text-base font-semibold text-foreground">
+                      {book.title}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
                       by {book.author}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="pt-0">
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3">
                     <Badge
                       className={cn(
                         genreClass(book.genre),
@@ -318,8 +307,17 @@ function BookClubHub() {
                     >
                       {book.genre}
                     </Badge>
-                  </CardContent>
-                </Card>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="shrink-0 text-muted-foreground hover:text-destructive"
+                      onClick={() => handleDelete(book.id)}
+                      aria-label={`Delete ${book.title}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
               ))}
             </div>
           )}
