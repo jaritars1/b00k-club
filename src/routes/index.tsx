@@ -171,7 +171,7 @@ function BookClubHub() {
                 Add a Recommendation
               </CardTitle>
               <CardDescription>
-                Tell us about a book the club should read next.
+                What should we read next?
               </CardDescription>
             </CardHeader>
             <CardContent>
