@@ -33,6 +33,7 @@ const GENRES = [
   "Sci-Fi/Fantasy",
   "Romance",
   "Biography/History",
+  "Historical Fiction",
   "Other",
 ] as const;
 
