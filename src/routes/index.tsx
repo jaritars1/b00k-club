@@ -33,6 +33,7 @@ const GENRES = [
   "Sci-Fi/Fantasy",
   "Romance",
   "Biography/History",
+  "Historical Fiction",
   "Other",
 ] as const;
 
@@ -52,6 +53,8 @@ function genreClass(genre: string): string {
       return "genre-romance";
     case "Biography/History":
       return "genre-bio";
+    case "Historical Fiction":
+      return "genre-historical";
     default:
       return "genre-other";
   }
