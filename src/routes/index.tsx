@@ -1,8 +1,23 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { useMutation, useSuspenseQuery, queryOptions } from "@tanstack/react-query";
+import {
+  useMutation,
+  useSuspenseQuery,
+  queryOptions,
+} from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { BookOpen, Plus, Search, Loader2 } from "lucide-react";
+import {
+  BookOpen,
+  Plus,
+  Search,
+  Loader2,
+  Pencil,
+  Trash2,
+  ThumbsUp,
+  Vote,
+  CheckCheck,
+  Undo2,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,9 +37,36 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { addBook, listBooks } from "@/lib/books.functions";
+import {
+  addBook,
+  deleteBook,
+  listBooks,
+  setBookStatus,
+  updateBook,
+  voteBook,
+  type BookRec,
+} from "@/lib/books.functions";
 
 const GENRES = [
   "Fiction",
@@ -38,6 +80,8 @@ const GENRES = [
 ] as const;
 
 type Genre = (typeof GENRES)[number];
+
+const VOTES_KEY = "alw-bookclub-votes";
 
 function genreClass(genre: string): string {
   switch (genre) {
@@ -95,6 +139,10 @@ function BookClubHub() {
   const { data: books } = useSuspenseQuery(booksQueryOptions);
   const router = useRouter();
   const addBookFn = useServerFn(addBook);
+  const updateBookFn = useServerFn(updateBook);
+  const deleteBookFn = useServerFn(deleteBook);
+  const setStatusFn = useServerFn(setBookStatus);
+  const voteBookFn = useServerFn(voteBook);
 
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
@@ -102,7 +150,42 @@ function BookClubHub() {
   const [filterGenre, setFilterGenre] = useState<Genre | "all">("all");
   const [search, setSearch] = useState("");
 
-  const mutation = useMutation({
+  const [editing, setEditing] = useState<BookRec | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editAuthor, setEditAuthor] = useState("");
+  const [editGenre, setEditGenre] = useState<Genre | "">("");
+  const [deleting, setDeleting] = useState<BookRec | null>(null);
+
+  const [myVotes, setMyVotes] = useState<string[]>([]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(VOTES_KEY);
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          setMyVotes(parsed.filter((v): v is string => typeof v === "string"));
+        }
+      }
+    } catch {
+      /* ignore malformed cache */
+    }
+  }, []);
+
+  const persistVotes = (next: string[]) => {
+    setMyVotes(next);
+    try {
+      localStorage.setItem(VOTES_KEY, JSON.stringify(next));
+    } catch {
+      /* storage unavailable */
+    }
+  };
+
+  const refresh = async () => {
+    await router.invalidate();
+  };
+
+  const addMutation = useMutation({
     mutationFn: (vars: { title: string; author: string; genre: Genre }) =>
       addBookFn({ data: vars }),
     onSuccess: async () => {
@@ -110,27 +193,97 @@ function BookClubHub() {
       setAuthor("");
       setGenre("");
       toast.success("Recommendation added!");
-      await router.invalidate();
+      await refresh();
     },
-    onError: (err: Error) => {
-      toast.error(err.message || "Failed to add book");
+    onError: (err: Error) => toast.error(err.message || "Failed to add book"),
+  });
+
+  const editMutation = useMutation({
+    mutationFn: (vars: {
+      id: string;
+      title: string;
+      author: string;
+      genre: Genre;
+    }) => updateBookFn({ data: vars }),
+    onSuccess: async () => {
+      setEditing(null);
+      toast.success("Book updated");
+      await refresh();
     },
+    onError: (err: Error) => toast.error(err.message || "Failed to update book"),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => deleteBookFn({ data: { id } }),
+    onSuccess: async () => {
+      setDeleting(null);
+      toast.success("Book removed");
+      await refresh();
+    },
+    onError: (err: Error) => toast.error(err.message || "Failed to delete book"),
+  });
+
+  const statusMutation = useMutation({
+    mutationFn: (vars: {
+      id: string;
+      status: "recommended" | "nominated" | "read";
+    }) => setStatusFn({ data: vars }),
+    onSuccess: async () => {
+      await refresh();
+    },
+    onError: (err: Error) => toast.error(err.message || "Failed to move book"),
+  });
+
+  const voteMutation = useMutation({
+    mutationFn: (vars: { id: string; delta: 1 | -1 }) =>
+      voteBookFn({ data: vars }),
+    onSuccess: async () => {
+      await refresh();
+    },
+    onError: (err: Error) => toast.error(err.message || "Failed to save vote"),
   });
 
   const canSubmit =
-    title.trim() && author.trim() && genre && !mutation.isPending;
+    title.trim() && author.trim() && genre && !addMutation.isPending;
 
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
-    mutation.mutate({
+    addMutation.mutate({
       title: title.trim(),
       author: author.trim(),
       genre: genre as Genre,
     });
   };
 
-  const filteredBooks = books.filter((book) => {
+  const openEdit = (book: BookRec) => {
+    setEditing(book);
+    setEditTitle(book.title);
+    setEditAuthor(book.author);
+    setEditGenre(book.genre as Genre);
+  };
+
+  const handleEditSave = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editing || !editTitle.trim() || !editAuthor.trim() || !editGenre) return;
+    editMutation.mutate({
+      id: editing.id,
+      title: editTitle.trim(),
+      author: editAuthor.trim(),
+      genre: editGenre,
+    });
+  };
+
+  const handleVote = (book: BookRec) => {
+    const hasVoted = myVotes.includes(book.id);
+    const delta: 1 | -1 = hasVoted ? -1 : 1;
+    persistVotes(
+      hasVoted ? myVotes.filter((id) => id !== book.id) : [...myVotes, book.id],
+    );
+    voteMutation.mutate({ id: book.id, delta });
+  };
+
+  const matchesFilters = (book: BookRec) => {
     const matchesGenre = filterGenre === "all" || book.genre === filterGenre;
     const query = search.trim().toLowerCase();
     const matchesSearch =
@@ -138,7 +291,53 @@ function BookClubHub() {
       book.title.toLowerCase().includes(query) ||
       book.author.toLowerCase().includes(query);
     return matchesGenre && matchesSearch;
-  });
+  };
+
+  const recommended = books
+    .filter((b) => b.status === "recommended")
+    .filter(matchesFilters);
+  const nominated = books
+    .filter((b) => b.status === "nominated")
+    .filter(matchesFilters)
+    .sort((a, b) => b.votes - a.votes || b.createdAt - a.createdAt);
+  const alreadyRead = books
+    .filter((b) => b.status === "read")
+    .filter(matchesFilters);
+
+  const busy =
+    statusMutation.isPending || voteMutation.isPending || deleteMutation.isPending;
+
+  const bookRow = (book: BookRec, actions: React.ReactNode) => (
+    <div
+      key={book.id}
+      className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 shadow-sm transition-shadow hover:shadow-md sm:flex-row sm:items-center sm:justify-between"
+    >
+      <div className="min-w-0 space-y-1">
+        <p className="truncate text-base font-semibold text-foreground">
+          {book.title}
+        </p>
+        <p className="text-sm text-muted-foreground">by {book.author}</p>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge
+          className={cn(
+            genreClass(book.genre),
+            "border-transparent font-sans shrink-0",
+          )}
+        >
+          {book.genre}
+        </Badge>
+        {actions}
+      </div>
+    </div>
+  );
+
+  const emptyState = (message: string) => (
+    <div className="rounded-xl border border-dashed border-border bg-card p-10 text-center">
+      <BookOpen className="mx-auto h-10 w-10 text-muted-foreground" />
+      <p className="mt-4 text-muted-foreground">{message}</p>
+    </div>
+  );
 
   return (
     <main className="min-h-screen bg-background px-4 py-10 sm:px-6 lg:px-8">
@@ -175,7 +374,7 @@ function BookClubHub() {
                     placeholder="e.g. The Night Circus"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
-                    disabled={mutation.isPending}
+                    disabled={addMutation.isPending}
                   />
                 </div>
                 <div className="space-y-2">
@@ -185,7 +384,7 @@ function BookClubHub() {
                     placeholder="e.g. Erin Morgenstern"
                     value={author}
                     onChange={(e) => setAuthor(e.target.value)}
-                    disabled={mutation.isPending}
+                    disabled={addMutation.isPending}
                   />
                 </div>
                 <div className="space-y-2">
@@ -193,7 +392,7 @@ function BookClubHub() {
                   <Select
                     value={genre}
                     onValueChange={(value) => setGenre(value as Genre)}
-                    disabled={mutation.isPending}
+                    disabled={addMutation.isPending}
                   >
                     <SelectTrigger id="genre" className="w-full">
                       <SelectValue placeholder="Select genre" />
@@ -209,7 +408,7 @@ function BookClubHub() {
                 </div>
                 <div className="flex items-end">
                   <Button type="submit" disabled={!canSubmit} className="w-full">
-                    {mutation.isPending ? (
+                    {addMutation.isPending ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       <Plus className="h-4 w-4" />
@@ -222,39 +421,218 @@ function BookClubHub() {
           </Card>
         </section>
 
-        <section aria-labelledby="recommendations-heading" className="space-y-5">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <h2
-              id="recommendations-heading"
-              className="font-serif text-2xl font-semibold tracking-tight text-foreground"
+        <section aria-labelledby="library-heading" className="space-y-5">
+          <h2 id="library-heading" className="sr-only">
+            Book club library
+          </h2>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                id="search"
+                placeholder="Search by title or author"
+                className="pl-9"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <Select
+              value={filterGenre}
+              onValueChange={(value) => setFilterGenre(value as Genre | "all")}
             >
-              Recommended Books
-              <span className="ml-2 text-base font-sans font-normal text-muted-foreground">
-                ({filteredBooks.length})
-              </span>
-            </h2>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:min-w-[24rem]">
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  id="search"
-                  placeholder="Search by title or author"
-                  className="pl-9"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
-              </div>
+              <SelectTrigger id="filter-genre" className="w-full">
+                <SelectValue placeholder="Filter by genre" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Genres</SelectItem>
+                {GENRES.map((g) => (
+                  <SelectItem key={g} value={g}>
+                    {g}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <Tabs defaultValue="recommended" className="space-y-5">
+            <TabsList className="grid w-full grid-cols-1 gap-1 h-auto sm:grid-cols-3">
+              <TabsTrigger value="recommended">
+                Recommended Books ({recommended.length})
+              </TabsTrigger>
+              <TabsTrigger value="nominated">
+                Voted on for next read ({nominated.length})
+              </TabsTrigger>
+              <TabsTrigger value="read">
+                Already read ({alreadyRead.length})
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="recommended" className="space-y-3">
+              {recommended.length === 0
+                ? emptyState(
+                    "No recommendations here yet. Add the first book above!",
+                  )
+                : recommended.map((book) =>
+                    bookRow(
+                      book,
+                      <>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() =>
+                            statusMutation.mutate({
+                              id: book.id,
+                              status: "nominated",
+                            })
+                          }
+                        >
+                          <Vote className="h-4 w-4" />
+                          Nominate
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`Edit ${book.title}`}
+                          onClick={() => openEdit(book)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`Delete ${book.title}`}
+                          onClick={() => setDeleting(book)}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </>,
+                    ),
+                  )}
+            </TabsContent>
+
+            <TabsContent value="nominated" className="space-y-3">
+              {nominated.length === 0
+                ? emptyState(
+                    "No books nominated yet. Nominate one from the Recommended tab.",
+                  )
+                : nominated.map((book) =>
+                    bookRow(
+                      book,
+                      <>
+                        <Button
+                          variant={
+                            myVotes.includes(book.id) ? "default" : "outline"
+                          }
+                          size="sm"
+                          disabled={busy}
+                          aria-pressed={myVotes.includes(book.id)}
+                          onClick={() => handleVote(book)}
+                        >
+                          <ThumbsUp className="h-4 w-4" />
+                          {book.votes}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() =>
+                            statusMutation.mutate({
+                              id: book.id,
+                              status: "read",
+                            })
+                          }
+                        >
+                          <CheckCheck className="h-4 w-4" />
+                          Mark as read
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`Edit ${book.title}`}
+                          onClick={() => openEdit(book)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`Delete ${book.title}`}
+                          onClick={() => setDeleting(book)}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </>,
+                    ),
+                  )}
+            </TabsContent>
+
+            <TabsContent value="read" className="space-y-3">
+              {alreadyRead.length === 0
+                ? emptyState("Nothing marked as read yet.")
+                : alreadyRead.map((book) =>
+                    bookRow(
+                      book,
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() =>
+                          statusMutation.mutate({
+                            id: book.id,
+                            status: "recommended",
+                          })
+                        }
+                      >
+                        <Undo2 className="h-4 w-4" />
+                        Back to recommended
+                      </Button>,
+                    ),
+                  )}
+            </TabsContent>
+          </Tabs>
+        </section>
+      </div>
+
+      <Dialog
+        open={editing !== null}
+        onOpenChange={(open) => !open && setEditing(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="font-serif">Edit book</DialogTitle>
+            <DialogDescription>
+              Fix a typo or change the genre for this recommendation.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleEditSave} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-title">Book Title</Label>
+              <Input
+                id="edit-title"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-author">Author</Label>
+              <Input
+                id="edit-author"
+                value={editAuthor}
+                onChange={(e) => setEditAuthor(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-genre">Genre</Label>
               <Select
-                value={filterGenre}
-                onValueChange={(value) =>
-                  setFilterGenre(value as Genre | "all")
-                }
+                value={editGenre}
+                onValueChange={(value) => setEditGenre(value as Genre)}
               >
-                <SelectTrigger id="filter-genre" className="w-full">
-                  <SelectValue placeholder="Filter by genre" />
+                <SelectTrigger id="edit-genre" className="w-full">
+                  <SelectValue placeholder="Select genre" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Genres</SelectItem>
                   {GENRES.map((g) => (
                     <SelectItem key={g} value={g}>
                       {g}
@@ -263,46 +641,52 @@ function BookClubHub() {
                 </SelectContent>
               </Select>
             </div>
-          </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setEditing(null)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={editMutation.isPending}>
+                {editMutation.isPending && (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                )}
+                Save changes
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
-          {filteredBooks.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border bg-card p-10 text-center">
-              <BookOpen className="mx-auto h-10 w-10 text-muted-foreground" />
-              <p className="mt-4 text-muted-foreground">
-                {books.length === 0
-                  ? "No recommendations yet. Add the first book above!"
-                  : "No books match your search or filter."}
-              </p>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {filteredBooks.map((book) => (
-                <div
-                  key={book.id}
-                  className="flex items-center justify-between gap-4 rounded-xl border border-border bg-card p-4 shadow-sm transition-shadow hover:shadow-md"
-                >
-                  <div className="min-w-0 space-y-1">
-                    <p className="truncate text-base font-semibold text-foreground">
-                      {book.title}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      by {book.author}
-                    </p>
-                  </div>
-                  <Badge
-                    className={cn(
-                      genreClass(book.genre),
-                      "border-transparent font-sans shrink-0",
-                    )}
-                  >
-                    {book.genre}
-                  </Badge>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
+      <AlertDialog
+        open={deleting !== null}
+        onOpenChange={(open) => !open && setDeleting(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-serif">
+              Remove “{deleting?.title}”?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              It will disappear from the list, but the row is kept in the shared
+              spreadsheet so an admin can restore it later.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                if (deleting) deleteMutation.mutate(deleting.id);
+              }}
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </main>
   );
 }
