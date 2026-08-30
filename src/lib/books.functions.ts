@@ -14,6 +14,7 @@ export interface BookRec {
   createdAt: number;
   status: BookStatus;
   votes: number;
+  rowNumber: number;
 }
 
 interface SheetRow extends BookRec {
@@ -118,7 +119,44 @@ async function writeRow(row: SheetRow): Promise<void> {
   }
 }
 
-async function findRow(id: string): Promise<SheetRow> {
+// Reads a single row by its known sheet row number instead of the whole
+// sheet. This is the fast path used when the client already knows which
+// row a book lives on (it does, since listBooks() returns rowNumber).
+async function readRow(rowNumber: number): Promise<SheetRow | null> {
+  const range = `Sheet1!A${rowNumber}:H${rowNumber}`;
+  const res = await sheetFetch(
+    `${GATEWAY}/spreadsheets/${SPREADSHEET_ID}/values/${range}`,
+    { headers: authHeaders() },
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to read row: ${res.status} ${await res.text()}`);
+  }
+  const data = (await res.json()) as { values?: string[][] };
+  const r = data.values?.[0];
+  if (!r) return null;
+  return {
+    rowNumber,
+    id: r[0] ?? "",
+    title: r[1] ?? "",
+    author: r[2] ?? "",
+    genre: r[3] ?? "Other",
+    createdAt: Number(r[4]) || 0,
+    status: normalizeStatus(r[5] ?? ""),
+    votes: Number(r[6]) || 0,
+    deletedAt: r[7] ?? "",
+  };
+}
+
+// `rowNumber` is an optional hint from the client (echoed back from a prior
+// listBooks() call). When it's present and still points at the right book,
+// this does one single-row read instead of reading every row in the sheet.
+// Falls back to a full scan if the hint is missing or stale (e.g. someone
+// edited the sheet by hand), so correctness never depends on the client.
+async function findRow(id: string, rowNumber?: number): Promise<SheetRow> {
+  if (rowNumber && rowNumber > 1) {
+    const row = await readRow(rowNumber);
+    if (row && row.id === id) return row;
+  }
   const rows = await readRows();
   const row = rows.find((r) => r.id === id);
   if (!row) throw new Error("Book not found");
@@ -134,6 +172,7 @@ function publicBook(row: SheetRow): BookRec {
     createdAt: row.createdAt,
     status: row.status,
     votes: row.votes,
+    rowNumber: row.rowNumber,
   };
 }
 
@@ -161,13 +200,13 @@ export const addBook = createServerFn({ method: "POST" })
     return { title, author, genre };
   })
   .handler(async ({ data }): Promise<BookRec> => {
-    const book: BookRec = {
+    const draft = {
       id: crypto.randomUUID(),
       title: data.title,
       author: data.author,
       genre: data.genre,
       createdAt: Date.now(),
-      status: "recommended",
+      status: "recommended" as const,
       votes: 0,
     };
     const res = await sheetFetch(
@@ -177,7 +216,7 @@ export const addBook = createServerFn({ method: "POST" })
         headers: { ...authHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({
           values: [
-            toRowValues({ ...book, rowNumber: 0, deletedAt: "" }),
+            toRowValues({ ...draft, rowNumber: 0, deletedAt: "" }),
           ],
         }),
       },
@@ -185,12 +224,24 @@ export const addBook = createServerFn({ method: "POST" })
     if (!res.ok) {
       throw new Error(`Failed to add book: ${res.status} ${await res.text()}`);
     }
-    return book;
+    // Pull the actual row number out of the append response (e.g.
+    // "Sheet1!A6:H6") so the client can target this row directly on its
+    // very next action, instead of falling back to a full sheet scan.
+    const body = (await res.json()) as { updates?: { updatedRange?: string } };
+    const match = body.updates?.updatedRange?.match(/![A-Z]+(\d+):/);
+    const rowNumber = match ? Number(match[1]) : 0;
+    return { ...draft, rowNumber };
   });
 
 export const updateBook = createServerFn({ method: "POST" })
   .inputValidator(
-    (data: { id: string; title: string; author: string; genre: string }) => {
+    (data: {
+      id: string;
+      title: string;
+      author: string;
+      genre: string;
+      rowNumber?: number;
+    }) => {
       const id = String(data.id ?? "").trim();
       const title = String(data.title ?? "").trim();
       const author = String(data.author ?? "").trim();
@@ -202,11 +253,11 @@ export const updateBook = createServerFn({ method: "POST" })
       if (title.length > 200 || author.length > 200 || genre.length > 50) {
         throw new Error("Input too long");
       }
-      return { id, title, author, genre };
+      return { id, title, author, genre, rowNumber: data.rowNumber };
     },
   )
   .handler(async ({ data }): Promise<BookRec> => {
-    const row = await findRow(data.id);
+    const row = await findRow(data.id, data.rowNumber);
     const updated: SheetRow = {
       ...row,
       title: data.title,
@@ -218,13 +269,13 @@ export const updateBook = createServerFn({ method: "POST" })
   });
 
 export const deleteBook = createServerFn({ method: "POST" })
-  .inputValidator((data: { id: string }) => {
+  .inputValidator((data: { id: string; rowNumber?: number }) => {
     const id = String(data.id ?? "").trim();
     if (!id) throw new Error("Missing book id");
-    return { id };
+    return { id, rowNumber: data.rowNumber };
   })
   .handler(async ({ data }): Promise<{ id: string }> => {
-    const row = await findRow(data.id);
+    const row = await findRow(data.id, data.rowNumber);
     // Soft delete: the row is preserved in the sheet so an admin can restore it.
     await writeRow({
       ...row,
@@ -235,32 +286,34 @@ export const deleteBook = createServerFn({ method: "POST" })
   });
 
 export const setBookStatus = createServerFn({ method: "POST" })
-  .inputValidator((data: { id: string; status: BookStatus }) => {
-    const id = String(data.id ?? "").trim();
-    const status = String(data.status ?? "") as BookStatus;
-    if (!id) throw new Error("Missing book id");
-    if (!["recommended", "nominated", "read"].includes(status)) {
-      throw new Error("Invalid status");
-    }
-    return { id, status };
-  })
+  .inputValidator(
+    (data: { id: string; status: BookStatus; rowNumber?: number }) => {
+      const id = String(data.id ?? "").trim();
+      const status = String(data.status ?? "") as BookStatus;
+      if (!id) throw new Error("Missing book id");
+      if (!["recommended", "nominated", "read"].includes(status)) {
+        throw new Error("Invalid status");
+      }
+      return { id, status, rowNumber: data.rowNumber };
+    },
+  )
   .handler(async ({ data }): Promise<BookRec> => {
-    const row = await findRow(data.id);
+    const row = await findRow(data.id, data.rowNumber);
     const updated: SheetRow = { ...row, status: data.status };
     await writeRow(updated);
     return publicBook(updated);
   });
 
 export const voteBook = createServerFn({ method: "POST" })
-  .inputValidator((data: { id: string; delta: number }) => {
+  .inputValidator((data: { id: string; delta: number; rowNumber?: number }) => {
     const id = String(data.id ?? "").trim();
     const delta = Number(data.delta);
     if (!id) throw new Error("Missing book id");
     if (delta !== 1 && delta !== -1) throw new Error("Invalid vote");
-    return { id, delta };
+    return { id, delta, rowNumber: data.rowNumber };
   })
   .handler(async ({ data }): Promise<BookRec> => {
-    const row = await findRow(data.id);
+    const row = await findRow(data.id, data.rowNumber);
     const updated: SheetRow = {
       ...row,
       votes: Math.max(0, row.votes + data.delta),

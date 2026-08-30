@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import {
   useMutation,
+  useQueryClient,
   useSuspenseQuery,
   queryOptions,
 } from "@tanstack/react-query";
@@ -137,7 +138,6 @@ export const Route = createFileRoute("/")({
 
 function BookClubHub() {
   const { data: books } = useSuspenseQuery(booksQueryOptions);
-  const router = useRouter();
   const addBookFn = useServerFn(addBook);
   const updateBookFn = useServerFn(updateBook);
   const deleteBookFn = useServerFn(deleteBook);
@@ -181,19 +181,52 @@ function BookClubHub() {
     }
   };
 
-  const refresh = async () => {
-    await router.invalidate();
+  const queryClient = useQueryClient();
+
+  // Reconciles with the server in the background without blocking the UI —
+  // used after a mutation settles so a stray edit from someone else in the
+  // shared sheet eventually shows up, but the button click itself never
+  // has to wait on this.
+  const syncInBackground = () => {
+    queryClient.invalidateQueries({ queryKey: booksQueryOptions.queryKey });
+  };
+
+  // Every button (nominate, vote, mark read, move back, etc.) patches the
+  // cached book list immediately so the relevant tab/section re-renders on
+  // click, instead of waiting for the sheet round-trip to finish.
+  const patchBook = (id: string, patch: Partial<BookRec>) => {
+    queryClient.setQueryData<BookRec[]>(booksQueryOptions.queryKey, (old) =>
+      old?.map((b) => (b.id === id ? { ...b, ...patch } : b)),
+    );
+  };
+
+  const removeBookFromCache = (id: string) => {
+    queryClient.setQueryData<BookRec[]>(booksQueryOptions.queryKey, (old) =>
+      old?.filter((b) => b.id !== id),
+    );
+  };
+
+  const snapshotBooks = () =>
+    queryClient.getQueryData<BookRec[]>(booksQueryOptions.queryKey);
+
+  const restoreBooks = (snapshot: BookRec[] | undefined) => {
+    if (snapshot) {
+      queryClient.setQueryData(booksQueryOptions.queryKey, snapshot);
+    }
   };
 
   const addMutation = useMutation({
     mutationFn: (vars: { title: string; author: string; genre: Genre }) =>
       addBookFn({ data: vars }),
-    onSuccess: async () => {
+    onSuccess: async (newBook) => {
+      queryClient.setQueryData<BookRec[]>(booksQueryOptions.queryKey, (old) =>
+        old ? [newBook, ...old] : [newBook],
+      );
       setTitle("");
       setAuthor("");
       setGenre("");
       toast.success("Recommendation added!");
-      await refresh();
+      syncInBackground();
     },
     onError: (err: Error) => toast.error(err.message || "Failed to add book"),
   });
@@ -204,43 +237,85 @@ function BookClubHub() {
       title: string;
       author: string;
       genre: Genre;
+      rowNumber: number;
     }) => updateBookFn({ data: vars }),
-    onSuccess: async () => {
+    onMutate: (vars) => {
+      const previous = snapshotBooks();
+      patchBook(vars.id, {
+        title: vars.title,
+        author: vars.author,
+        genre: vars.genre,
+      });
+      return { previous };
+    },
+    onSuccess: () => {
       setEditing(null);
       toast.success("Book updated");
-      await refresh();
+      syncInBackground();
     },
-    onError: (err: Error) => toast.error(err.message || "Failed to update book"),
+    onError: (err: Error, _vars, context) => {
+      restoreBooks(context?.previous);
+      toast.error(err.message || "Failed to update book");
+    },
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteBookFn({ data: { id } }),
-    onSuccess: async () => {
+    mutationFn: (vars: { id: string; rowNumber: number }) =>
+      deleteBookFn({ data: vars }),
+    onMutate: (vars) => {
+      const previous = snapshotBooks();
+      removeBookFromCache(vars.id);
+      return { previous };
+    },
+    onSuccess: () => {
       setDeleting(null);
       toast.success("Book removed");
-      await refresh();
+      syncInBackground();
     },
-    onError: (err: Error) => toast.error(err.message || "Failed to delete book"),
+    onError: (err: Error, _vars, context) => {
+      restoreBooks(context?.previous);
+      toast.error(err.message || "Failed to delete book");
+    },
   });
 
   const statusMutation = useMutation({
     mutationFn: (vars: {
       id: string;
       status: "recommended" | "nominated" | "read";
+      rowNumber: number;
     }) => setStatusFn({ data: vars }),
-    onSuccess: async () => {
-      await refresh();
+    onMutate: (vars) => {
+      const previous = snapshotBooks();
+      patchBook(vars.id, { status: vars.status });
+      return { previous };
     },
-    onError: (err: Error) => toast.error(err.message || "Failed to move book"),
+    onSuccess: () => {
+      syncInBackground();
+    },
+    onError: (err: Error, _vars, context) => {
+      restoreBooks(context?.previous);
+      toast.error(err.message || "Failed to move book");
+    },
   });
 
   const voteMutation = useMutation({
-    mutationFn: (vars: { id: string; delta: 1 | -1 }) =>
+    mutationFn: (vars: { id: string; delta: 1 | -1; rowNumber: number }) =>
       voteBookFn({ data: vars }),
-    onSuccess: async () => {
-      await refresh();
+    onMutate: (vars) => {
+      const previous = snapshotBooks();
+      const current = previous?.find((b) => b.id === vars.id);
+      if (current) {
+        patchBook(vars.id, { votes: Math.max(0, current.votes + vars.delta) });
+      }
+      return { previous };
     },
-    onError: (err: Error) => toast.error(err.message || "Failed to save vote"),
+    onSuccess: () => {
+      syncInBackground();
+    },
+    onError: (err: Error, _vars, context) => {
+      restoreBooks(context?.previous);
+      toast.error(err.message || "Failed to save vote");
+    },
   });
 
   const canSubmit =
@@ -271,6 +346,7 @@ function BookClubHub() {
       title: editTitle.trim(),
       author: editAuthor.trim(),
       genre: editGenre,
+      rowNumber: editing.rowNumber,
     });
   };
 
@@ -280,7 +356,7 @@ function BookClubHub() {
     persistVotes(
       hasVoted ? myVotes.filter((id) => id !== book.id) : [...myVotes, book.id],
     );
-    voteMutation.mutate({ id: book.id, delta });
+    voteMutation.mutate({ id: book.id, delta, rowNumber: book.rowNumber });
   };
 
   const matchesFilters = (book: BookRec) => {
@@ -485,6 +561,7 @@ function BookClubHub() {
                             statusMutation.mutate({
                               id: book.id,
                               status: "nominated",
+                              rowNumber: book.rowNumber,
                             })
                           }
                         >
@@ -541,11 +618,27 @@ function BookClubHub() {
                             statusMutation.mutate({
                               id: book.id,
                               status: "read",
+                              rowNumber: book.rowNumber,
                             })
                           }
                         >
                           <CheckCheck className="h-4 w-4" />
                           Mark as read
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() =>
+                            statusMutation.mutate({
+                              id: book.id,
+                              status: "recommended",
+                              rowNumber: book.rowNumber,
+                            })
+                          }
+                        >
+                          <Undo2 className="h-4 w-4" />
+                          Back to recommended
                         </Button>
                         <Button
                           variant="ghost"
@@ -582,6 +675,7 @@ function BookClubHub() {
                           statusMutation.mutate({
                             id: book.id,
                             status: "recommended",
+                            rowNumber: book.rowNumber,
                           })
                         }
                       >
@@ -679,7 +773,11 @@ function BookClubHub() {
             <AlertDialogAction
               onClick={(e) => {
                 e.preventDefault();
-                if (deleting) deleteMutation.mutate(deleting.id);
+                if (deleting)
+                  deleteMutation.mutate({
+                    id: deleting.id,
+                    rowNumber: deleting.rowNumber,
+                  });
               }}
             >
               Remove
